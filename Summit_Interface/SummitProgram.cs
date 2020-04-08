@@ -379,107 +379,108 @@ namespace Summit_Interface
 
             ////Configure Sensing============================================================
 
+            Console.WriteLine();
+            Console.WriteLine("Writing sense configuration...");
+            SenseStates theStates = SenseStates.LfpSense;
+            APIReturnInfo returnInfoBuffer;
+
+            //first turn off sensing
+            m_summit.WriteSensingState(SenseStates.None, 0x00);
+
+            //set up time domain channels configurations
+            List<TimeDomainChannel> timeDomainChannels;
+            List<int?> indexInJSON;
+            SummitUtils.ConfigureTimeDomain(parameters, out indexInJSON, out timeDomainChannels, ref samplingRate);
+            m_samplingRate = samplingRate;
+
+            //send time domain config to INS
+            returnInfoBuffer = m_summit.WriteSensingTimeDomainChannels(timeDomainChannels);
+            SensingConfiguration senseInfo;
+            returnInfoBuffer = m_summit.ReadSensingSettings(out senseInfo);
+            Console.WriteLine("Write TD Config Status: " + returnInfoBuffer.Descriptor);
+
+
+            // Set up the FFT
+            bool FFTEnabled = parameters.GetParam("Sense.FFT.Enabled", typeof(bool));
+            SenseTimeDomainChannel FFTChannel = new SenseTimeDomainChannel();
+
+            if (FFTEnabled)
+            {
+                theStates = theStates | SenseStates.Fft;
+
+                //set up configuration
+                FftConfiguration FFTConfig;
+                SummitUtils.ConfigureFFT(parameters, out FFTConfig, out FFTChannel);
+
+                //send FFT config to INS
+                returnInfoBuffer = m_summit.WriteSensingFftSettings(FFTConfig);
+                Console.WriteLine("Write FFT Config Status: " + returnInfoBuffer.Descriptor);
+            }
+
+
+            // Set up power channels 
+            bool powerEnabled;
+
+            //make power channel configurations
+            List<PowerChannel> powerChannels;
+            BandEnables theBandEnables;
+            SummitUtils.ConfigurePower(parameters, indexInJSON, out powerChannels, out theBandEnables, out powerEnabled);
+
+            if (powerEnabled)
+            {
+                theStates = theStates | SenseStates.Power;
+
+                //send configurations to INS
+                returnInfoBuffer = m_summit.WriteSensingPowerChannels(theBandEnables, powerChannels);
+                Console.WriteLine("Write Power Config Status: " + returnInfoBuffer.Descriptor);
+            }
+
+
+            // Set up miscellaneous settings
+            MiscellaneousSensing miscsettings = new MiscellaneousSensing();
+
+            //first, streaming frame period
+            int paramFrameSize = parameters.GetParam("Sense.PacketPeriod", typeof(int));
+            StreamingFrameRate streamingRate;
+            try
+            {
+                streamingRate = (StreamingFrameRate)Enum.Parse(typeof(StreamingFrameRate), "Frame" + paramFrameSize + "ms");
+            }
+            catch
+            {
+                throw new Exception(String.Format("Packet frame size: {0}, isn't a valid selection, check JSON file specifications!",
+                    paramFrameSize));
+            }
+            miscsettings.StreamingRate = streamingRate;
+
+            //for now, disable loop recording
+            miscsettings.LrTriggers = LoopRecordingTriggers.None;
+
+
+            // Write misc and accelerometer configurations to INS
+            returnInfoBuffer = m_summit.WriteSensingMiscSettings(miscsettings);
+            Console.WriteLine("Write Misc Config Status: " + returnInfoBuffer.Descriptor);
+            returnInfoBuffer = m_summit.WriteSensingAccelSettings(AccelSampleRate.Sample32);
+            Console.WriteLine("Write Accel Config Status: " + returnInfoBuffer.Descriptor);
+
+            // enable sensing components
+            m_summit.WriteSensingState(theStates, FFTEnabled ? FFTChannel : 0x00);
+            Console.WriteLine("Write Sensing Config Status: " + returnInfoBuffer.Descriptor);
+
+            //initialize streaming threads variables
+            m_nTDChans = parameters.GetParam("Sense.nChans", typeof(int));
+            m_prevLastValues = new double[m_nTDChans];
+
+            notifyCTM = parameters.GetParam("NotifyCTMPacketsReceived", typeof(bool));
+            interp = parameters.GetParam("Sense.InterpolateMissingPackets", typeof(bool));
+            bool enableTimeSync = parameters.GetParam("Sense.APITimeSync", typeof(bool));
+
+            //turn on sensing right away if sensing is set to Enabled
             if (doSensing)
             {
-                Console.WriteLine();
-                Console.WriteLine("Writing sense configuration...");
-                SenseStates theStates = SenseStates.LfpSense;
-                APIReturnInfo returnInfoBuffer;
-
-                //first turn off sensing
-                m_summit.WriteSensingState(SenseStates.None, 0x00);
-
-                //set up time domain channels configurations
-                List<TimeDomainChannel> timeDomainChannels;
-                List<int?> indexInJSON;
-                SummitUtils.ConfigureTimeDomain(parameters, out indexInJSON, out timeDomainChannels, ref samplingRate);
-                m_samplingRate = samplingRate;
-
-                //send time domain config to INS
-                returnInfoBuffer = m_summit.WriteSensingTimeDomainChannels(timeDomainChannels);
-                SensingConfiguration senseInfo;
-                returnInfoBuffer = m_summit.ReadSensingSettings(out senseInfo);
-                Console.WriteLine("Write TD Config Status: " + returnInfoBuffer.Descriptor);
-
-
-                // Set up the FFT
-                bool FFTEnabled = parameters.GetParam("Sense.FFT.Enabled", typeof(bool));
-                SenseTimeDomainChannel FFTChannel = new SenseTimeDomainChannel();
-
-                if (FFTEnabled)
-                {
-                    theStates = theStates | SenseStates.Fft;
-
-                    //set up configuration
-                    FftConfiguration FFTConfig;
-                    SummitUtils.ConfigureFFT(parameters, out FFTConfig, out FFTChannel);
-
-                    //send FFT config to INS
-                    returnInfoBuffer = m_summit.WriteSensingFftSettings(FFTConfig);
-                    Console.WriteLine("Write FFT Config Status: " + returnInfoBuffer.Descriptor);
-                }
-
-
-                // Set up power channels 
-                bool powerEnabled;
-
-                //make power channel configurations
-                List<PowerChannel> powerChannels;
-                BandEnables theBandEnables;
-                SummitUtils.ConfigurePower(parameters, indexInJSON, out powerChannels, out theBandEnables, out powerEnabled);
-
-                if (powerEnabled)
-                {
-                    theStates = theStates | SenseStates.Power;
-
-                    //send configurations to INS
-                    returnInfoBuffer = m_summit.WriteSensingPowerChannels(theBandEnables, powerChannels);
-                    Console.WriteLine("Write Power Config Status: " + returnInfoBuffer.Descriptor);
-                }
-
-
-                // Set up miscellaneous settings
-                MiscellaneousSensing miscsettings = new MiscellaneousSensing();
-
-                //first, streaming frame period
-                int paramFrameSize = parameters.GetParam("Sense.PacketPeriod", typeof(int));
-                StreamingFrameRate streamingRate;
-                try
-                {
-                    streamingRate = (StreamingFrameRate)Enum.Parse(typeof(StreamingFrameRate), "Frame" + paramFrameSize + "ms");
-                }
-                catch
-                {
-                    throw new Exception(String.Format("Packet frame size: {0}, isn't a valid selection, check JSON file specifications!",
-                        paramFrameSize));
-                }
-                miscsettings.StreamingRate = streamingRate;
-
-                //for now, disable loop recording
-                miscsettings.LrTriggers = LoopRecordingTriggers.None;
-
-
-                // Write misc and accelerometer configurations to INS
-                returnInfoBuffer = m_summit.WriteSensingMiscSettings(miscsettings);
-                Console.WriteLine("Write Misc Config Status: " + returnInfoBuffer.Descriptor);
-                returnInfoBuffer = m_summit.WriteSensingAccelSettings(AccelSampleRate.Sample32);
-                Console.WriteLine("Write Accel Config Status: " + returnInfoBuffer.Descriptor);
-
-                // turn on sensing components
-                m_summit.WriteSensingState(theStates, FFTEnabled ? FFTChannel : 0x00);
-                Console.WriteLine("Write Sensing Config Status: " + returnInfoBuffer.Descriptor);
-
                 // Start streaming for time domain, FFT, power, accelerometer, and time-synchronization.
                 // Leave streaming of detector events, adaptive stim, and markers disabled
-                bool enableTimeSync = parameters.GetParam("Sense.APITimeSync", typeof(bool));
                 returnInfoBuffer = m_summit.WriteSensingEnableStreams(true, FFTEnabled, powerEnabled, false, false, true, enableTimeSync, false);
-
-                //initialize streaming threads variables
-                m_nTDChans = parameters.GetParam("Sense.nChans", typeof(int));
-                m_prevLastValues = new double[m_nTDChans];
-
-                notifyCTM = parameters.GetParam("NotifyCTMPacketsReceived", typeof(bool));
-                interp = parameters.GetParam("Sense.InterpolateMissingPackets", typeof(bool));
             }
 
 
